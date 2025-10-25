@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WebGPU Version</title>
+<style>
+  html,body{
+    margin:0;height:100%;overflow:hidden;
+    background:url('https://cs460.org/assignments/04/bg.jpg') center/cover no-repeat;
+  }
+  canvas{width:100%;height:100%;display:block;cursor:none;}
+  #hud{
+    position:absolute;top:15px;right:15px;
+    background:rgba(0,0,0,.45);color:#fff;
+    padding:10px 14px;border-radius:10px;
+    font-family:sans-serif;line-height:1.5em;font-size:14px;
+  }
+  #hud b{color:#ffd166;}
+</style>
+</head>
+
+<audio id="waterSound" loop preload="auto">
+  <source src="sounds/underwater_bubbles.mp3" type="audio/mpeg">
+</audio>
+<audio id="bloopSound" preload="auto">
+  <source src="sounds/bubble_pop.mp3" type="audio/mpeg">
+</audio>
+
+<body>
+<canvas id="canvas"></canvas>
+<div id="hud">
+  <b>Controls</b><br>
+  W / ↑ – Up S / ↓ – Down A / ← – Left D / → – Right<br>
+  Move Mouse – Rotate M – Toggle Manual/Auto<br>
+  Click Once – Enable Sound<br>
+  <div id="mode" style="text-align:center;margin-top:4px;">Manual Control 🕹️</div>
+</div>
+
+<script type="module">
+const canvas=document.getElementById("canvas");
+canvas.width=innerWidth;canvas.height=innerHeight;
+const adapter=await navigator.gpu.requestAdapter();
+const device=await adapter.requestDevice();
+const ctx=canvas.getContext("webgpu");
+const format=navigator.gpu.getPreferredCanvasFormat();
+ctx.configure({device,format,alphaMode:"premultiplied"});
+
+// ---------- Audio ----------
+const waterSound=document.getElementById("waterSound");
+const bloopSound=document.getElementById("bloopSound");
+let soundsUnlocked=false;
+function unlockSounds(){
+  if(soundsUnlocked)return;
+  waterSound.volume=.4;bloopSound.volume=.7;
+  waterSound.play().catch(()=>{});
+  bloopSound.play().then(()=>setTimeout(()=>bloopSound.pause(),60)).catch(()=>{});
+  soundsUnlocked=true;
+  console.log("✅ Sounds unlocked");
+}
+document.body.addEventListener("click",unlockSounds,{once:true});
+window.addEventListener("keydown",unlockSounds,{once:true});
+function playBloop(){
+  if(!soundsUnlocked)return;
+  try{bloopSound.pause();bloopSound.currentTime=0;bloopSound.play().catch(()=>{});}catch{}
+}
+
+// ---------- Controls ----------
+let manual=true;
+const keys={},mouse={x:0,y:0};
+window.addEventListener("keydown",e=>{
+  keys[e.key.toLowerCase()]=true;
+  if(e.key.toLowerCase()==="m"){
+    manual=!manual;
+    document.getElementById("mode").textContent=
+      manual?"Manual Control 🕹️":"Autonomous Mode 🌊";
+  }
+});
+window.addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+window.addEventListener("mousemove",e=>{
+  mouse.x=(e.clientX/innerWidth)*2-1;
+  mouse.y=-(e.clientY/innerHeight)*2+1;
+});
+
+// ---------- Shaders ----------
+const fishVert=/*wgsl*/`
+struct Out{@builtin(position)pos:vec4f,@location(0)color:vec4f}
+@group(0)@binding(0)var<uniform>m:mat4x4f;
+@group(0)@binding(1)var<uniform>c:vec4f;
+@vertex fn main(@location(0)pos:vec3f)->Out{
+ var o:Out;o.pos=m*vec4f(pos,1.0);o.color=c;return o;}`;
+const fishFrag=/*wgsl*/`@fragment fn main(@location(0)color:vec4f)->@location(0)vec4f{return color;}`;
+const eyeVert=/*wgsl*/`
+struct Out{@builtin(position)pos:vec4f,@location(0)coord:vec2f}
+@group(0)@binding(0)var<uniform>m:mat4x4f;
+@vertex fn main(@builtin(vertex_index)vid:u32)->Out{
+ var o:Out;
+ var q=array<vec2f,6>(
+  vec2f(-0.015,-0.015),vec2f(0.015,-0.015),vec2f(-0.015,0.015),
+  vec2f(-0.015,0.015),vec2f(0.015,-0.015),vec2f(0.015,0.015));
+ o.coord=q[vid];o.pos=m*vec4f(q[vid],0,1);return o;
+}`;
+const eyeFrag=/*wgsl*/`
+@group(0)@binding(1)var<uniform>u_c:vec4f;
+@fragment fn main(@location(0)coord:vec2f)->@location(0)vec4f{
+ let r=length(coord*3.5);
+ let core=smoothstep(1.0,0.0,r);
+ let halo=smoothstep(2.5,1.0,r);
+ let base=mix(u_c.rgb,vec3(1.0),halo*0.8);
+ return vec4f(base,core*u_c.a);
+}`;
+
+// ---------- Pipelines ----------
+function makePipe(vs,fs){
+ return device.createRenderPipeline({
+  layout:"auto",
+  vertex:{module:device.createShaderModule({code:vs}),
+          entryPoint:"main",
+          buffers:[{arrayStride:12,attributes:[{shaderLocation:0,offset:0,format:"float32x3"}]}]},
+  fragment:{module:device.createShaderModule({code:fs}),entryPoint:"main",
+    targets:[{format,blend:{color:{srcFactor:"src-alpha",dstFactor:"one-minus-src-alpha"},
+                            alpha:{srcFactor:"one",dstFactor:"one-minus-src-alpha"}}}]},
+  primitive:{topology:"triangle-list"}});
+}
+const fishPipe=makePipe(fishVert,fishFrag);
+const eyePipe=device.createRenderPipeline({
+ layout:"auto",
+ vertex:{module:device.createShaderModule({code:eyeVert}),entryPoint:"main"},
+ fragment:{module:device.createShaderModule({code:eyeFrag}),entryPoint:"main",
+   targets:[{format,blend:{color:{srcFactor:"one",dstFactor:"one"},
+                           alpha:{srcFactor:"one",dstFactor:"one"}}}]},
+ primitive:{topology:"triangle-list"}
+});
+
+// ---------- Geometry ----------
+const verts=new Float32Array([
+ 0.5,0,0,0.2,0.25,0,-0.2,0.15,0,
+ -0.4,0.3,0,-0.4,-0.3,0,-0.2,-0.15,0,0.2,-0.25,0]);
+const idx=new Uint32Array([0,1,6,1,2,6,2,5,6,2,3,5,3,4,5]);
+const vbuf=device.createBuffer({size:verts.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+device.queue.writeBuffer(vbuf,0,verts);
+const ibuf=device.createBuffer({size:idx.byteLength,usage:GPUBufferUsage.INDEX|GPUBufferUsage.COPY_DST});
+device.queue.writeBuffer(ibuf,0,idx);
+
+// ---------- Fish creation ----------
+const fishArr=[];
+function makeFish(color,scale,speed,dir,offset){
+ const m=device.createBuffer({size:64,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+ const c=device.createBuffer({size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+ const mEye=device.createBuffer({size:64,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+ const cEye=device.createBuffer({size:16,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+ const body=device.createBindGroup({layout:fishPipe.getBindGroupLayout(0),entries:[
+   {binding:0,resource:{buffer:m}},{binding:1,resource:{buffer:c}}]});
+ const eye=device.createBindGroup({layout:eyePipe.getBindGroupLayout(0),entries:[
+   {binding:0,resource:{buffer:mEye}},{binding:1,resource:{buffer:cEye}}]});
+ fishArr.push({color,scale,speed,dir,off:offset,theta:Math.random()*0.5,
+   m,c,mEye,cEye,body,eye,hit:{x:false,y:false}});
+}
+makeFish([1,0.2,0.15,1],1.0,0.004,-1,[1.3,0]);
+for(let i=0;i<90;i++)
+ makeFish([Math.random(),Math.random(),Math.random(),0.5+Math.random()*0.4],
+   0.05+Math.random()*0.3,0.002+Math.random()*0.004,1,
+   [(Math.random()-0.5)*1.8,(Math.random()-0.5)*1.8]);
+
+// ---------- Render loop ----------
+const passDesc={colorAttachments:[{view:null,clearValue:{r:0,g:0,b:0,a:0},
+ loadOp:"clear",storeOp:"store"}]};
+let t=0;
+function frame(){
+ t+=0.02;
+ passDesc.colorAttachments[0].view=ctx.getCurrentTexture().createView();
+ const enc=device.createCommandEncoder();
+ const pass=enc.beginRenderPass(passDesc);
+ pass.setVertexBuffer(0,vbuf);pass.setIndexBuffer(ibuf,"uint32");
+
+ // ---- bodies ----
+ pass.setPipeline(fishPipe);
+ for (const f of fishArr) {
+   if (f === fishArr[0]) { // red fish
+     if (manual) {
+       const sp=0.012;
+       if(keys["w"]||keys["arrowup"]) f.off[1]+=sp;
+       if(keys["s"]||keys["arrowdown"]) f.off[1]-=sp;
+       if(keys["a"]||keys["arrowleft"]) f.off[0]-=sp;
+       if(keys["d"]||keys["arrowright"]) f.off[0]+=sp;
+       const dx=mouse.x-f.off[0],dy=mouse.y-f.off[1];
+       f.theta+=(Math.atan2(dy,dx)-f.theta)*0.1;
+       const margin=1.15-f.scale*0.5;
+       f.off[0]=Math.max(-margin,Math.min(margin,f.off[0]));
+       f.off[1]=Math.max(-margin,Math.min(margin,f.off[1]));
+     } else {
+       // autonomous red fish stays on screen
+       f.theta+=Math.sin(t*0.1+f.off[0])*0.001;
+       f.off[0]+=f.speed*Math.cos(f.theta)*f.dir;
+       f.off[1]+=f.speed*Math.sin(f.theta)+Math.sin(t*2.0+f.off[0]*5.0)*0.01;
+       const margin=1.25-f.scale*0.3;
+       let bounced=false;
+       if(f.off[0]>margin){f.off[0]=margin;f.theta=Math.PI-f.theta;bounced=true;}
+       if(f.off[0]<-margin){f.off[0]=-margin;f.theta=Math.PI-f.theta;bounced=true;}
+       if(f.off[1]>margin){f.off[1]=margin;f.theta=-f.theta;bounced=true;}
+       if(f.off[1]<-margin){f.off[1]=-margin;f.theta=-f.theta;bounced=true;}
+       if(bounced) playBloop();
+     }
+   } else {
+     // small fish wrapping
+     f.theta+=Math.sin(t*0.1+f.off[0])*0.001;
+     f.off[0]+=f.speed*Math.cos(f.theta)*f.dir;
+     f.off[1]+=f.speed*Math.sin(f.theta)+Math.sin(t*2.0+f.off[0]*5.0)*0.01;
+     const wrap=1.4+f.scale*0.5;
+     let wrapped=false;
+     if(f.off[0]>wrap){f.off[0]=-wrap;wrapped=true;}
+     if(f.off[0]<-wrap){f.off[0]=wrap;wrapped=true;}
+     if(f.off[1]>wrap){f.off[1]=-wrap;wrapped=true;}
+     if(f.off[1]<-wrap){f.off[1]=wrap;wrapped=true;}
+     if(wrapped) playBloop();
+   }
+
+   // --- random 0–10° wobble rotation ---
+   const randTheta=(Math.random()*10*Math.PI)/180;
+   const rc=Math.cos(randTheta),rs=Math.sin(randTheta);
+   const wc=Math.cos(f.theta)*rc - Math.sin(f.theta)*rs;
+   const ws=Math.sin(f.theta)*rc + Math.cos(f.theta)*rs;
+
+   const m=[f.dir*f.scale*wc,-f.scale*ws,0,0,
+            f.scale*ws,f.dir*f.scale*wc,0,0,
+            0,0,f.scale,0,
+            f.off[0],f.off[1],0,1];
+   device.queue.writeBuffer(f.m,0,new Float32Array(m));
+
+   const now=performance.now()*0.001;
+   const depthFade=Math.min(1.0,Math.pow(f.scale*3.0,0.8));
+   const depthAlpha=Math.max(0.2,depthFade*f.color[3]);
+   const bright=.5+.5*depthFade;
+   let a=.6+.4*Math.sin(now*2.0);
+   let col=[(0.3+0.2*Math.sin(now))*bright,
+            (0.6+0.2*Math.sin(now+2.0))*bright,
+            (0.9+0.1*Math.sin(now+4.0))*bright,
+            a*depthAlpha];
+   if(f.scale>=0.9){const p=.7+.1*Math.sin(now*2.5);col=[1,.2,.15,p];}
+   device.queue.writeBuffer(f.c,0,new Float32Array(col));
+   f._c=Math.cos(f.theta);f._s=Math.sin(f.theta);
+   pass.setBindGroup(0,f.body);pass.drawIndexed(15);
+ }
+
+ // ---- eyes ----
+ pass.setPipeline(eyePipe);
+ for(const f of fishArr){
+   const c=f._c,s=f._s;
+   let eyeX,eyeY;
+   if(f.scale>=0.9){eyeX=0.34*f.dir; eyeY=0.07;}
+   else{eyeX=0.27*f.dir; eyeY=0.035;}
+   const mEye=[f.scale*c,-f.scale*s,0,0,f.scale*s,f.scale*c,0,0,0,0,f.scale,0,
+     f.off[0]+(eyeX*c-eyeY*s)*f.scale,
+     f.off[1]+(eyeX*s+eyeY*c)*f.scale,0,1];
+   device.queue.writeBuffer(f.mEye,0,new Float32Array(mEye));
+   const alpha=Math.min(f.color[3]*.9,1);
+   const col=(f.scale>=0.9)?[1,0.85,0.15,alpha]:[0.25,0.75,1,alpha];
+   device.queue.writeBuffer(f.cEye,0,new Float32Array(col));
+   pass.setBindGroup(0,f.eye);pass.draw(6);
+ }
+
+ pass.end();device.queue.submit([enc.finish()]);
+ requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>
