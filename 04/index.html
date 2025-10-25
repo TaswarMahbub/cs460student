@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WebGL Version</title>
+<style>
+  html,body{
+    margin:0;
+    height:100%;
+    overflow:hidden;
+    background:url('https://cs460.org/assignments/04/bg.jpg') center/cover no-repeat;
+  }
+  #c{width:100%;height:100%;display:block;cursor:none;}
+  #instructions {
+    position:absolute;top:20px;right:20px;
+    background:rgba(0,0,0,0.45);
+    color:white;font-family:"Segoe UI",sans-serif;
+    font-size:15px;line-height:1.5em;
+    padding:12px 16px;border-radius:10px;
+    box-shadow:0 0 10px rgba(0,0,0,0.6);
+  }
+  #instructions h3{margin:0 0 6px 0;font-size:17px;color:#ffd166;text-align:center;}
+</style>
+</head>
+
+<!-- MP3 files -->
+<audio id="waterSound" loop preload="auto">
+  <source src="sounds/underwater_bubbles.mp3" type="audio/mpeg">
+</audio>
+<audio id="bloopSound" preload="auto">
+  <source src="sounds/bubble_pop.mp3" type="audio/mpeg">
+</audio>
+
+<!-- Shaders -->
+<script id="body-vert" type="glsl">
+attribute vec3 a_position;
+uniform mat4 u_transform;
+void main(void){ gl_Position = u_transform * vec4(a_position,1.0); }
+</script>
+<script id="body-frag" type="glsl">
+precision mediump float;
+uniform vec4 u_color;
+void main(void){ gl_FragColor = u_color; }
+</script>
+<script id="eye-vert" type="glsl">
+attribute vec3 a_position;
+uniform mat4 u_transform;
+uniform float u_pointsize;
+void main(void){
+  gl_Position = u_transform * vec4(a_position,1.0);
+  gl_PointSize = u_pointsize;
+}
+</script>
+<script id="eye-frag" type="glsl">
+precision mediump float;
+uniform vec4 u_color;
+void main(void){
+  vec2 coord = gl_PointCoord * 2.0 - 1.0;
+  float r = dot(coord, coord);
+  float glow = smoothstep(1.0, 0.0, r);
+  float halo = smoothstep(1.3, 0.8, r);
+  vec3 base = mix(u_color.rgb, vec3(1.0), (1.0 - r) * 0.6 + halo * 0.4);
+  float alpha = glow * u_color.a;
+  gl_FragColor = vec4(base, alpha);
+}
+</script>
+
+<script>
+let gl, bodyProg, eyeProg, all_fish = [], time = 0;
+let keys = {}, mouse = {x:0,y:0};
+let manualMode = true;
+const BOUNDS_X = 1.3, BOUNDS_Y = 1.0;
+
+// Audio setup
+let waterSound, bloopSound;
+let soundsUnlocked = false;
+
+window.onload = () => {
+  const c = document.getElementById("c");
+  c.width = innerWidth; c.height = innerHeight;
+  gl = c.getContext("webgl");
+  gl.viewport(0,0,c.width,c.height);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.disable(gl.DEPTH_TEST);
+
+  waterSound = document.getElementById("waterSound");
+  bloopSound = document.getElementById("bloopSound");
+
+  // Unlock sounds once user interacts
+  function unlockSounds() {
+    if (!soundsUnlocked) {
+      try {
+        waterSound.currentTime = 0;
+        bloopSound.currentTime = 0;
+        waterSound.volume = 0.4;
+        bloopSound.volume = 0.7;
+        waterSound.play().catch(()=>{});
+        bloopSound.play()
+          .then(()=>setTimeout(()=>bloopSound.pause(),50))
+          .catch(()=>{});
+        soundsUnlocked = true;
+        console.log("✅ Sounds unlocked");
+      } catch(e) { console.warn("Audio unlock failed:", e); }
+    }
+  }
+  document.body.addEventListener("click", unlockSounds, { once: true });
+  window.addEventListener("keydown", unlockSounds, { once: true });
+
+  // Controls
+  window.addEventListener("keydown", e => {
+    keys[e.key.toLowerCase()] = true;
+    if(e.key.toLowerCase() === "m"){
+      manualMode = !manualMode;
+      document.getElementById("modeStatus").textContent =
+        manualMode ? "Manual Control 🕹️" : "Autonomous Mode 🌊";
+    }
+  });
+  window.addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
+  window.addEventListener("mousemove", e => {
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  });
+
+  // Shader helpers
+  function makeShader(type, src) {
+    let s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+      console.error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  function makeProgram(vs, fs) {
+    let p = gl.createProgram();
+    gl.attachShader(p, vs); gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    return p;
+  }
+
+  bodyProg = makeProgram(
+    makeShader(gl.VERTEX_SHADER, document.getElementById("body-vert").textContent),
+    makeShader(gl.FRAGMENT_SHADER, document.getElementById("body-frag").textContent)
+  );
+  eyeProg = makeProgram(
+    makeShader(gl.VERTEX_SHADER, document.getElementById("eye-vert").textContent),
+    makeShader(gl.FRAGMENT_SHADER, document.getElementById("eye-frag").textContent)
+  );
+
+  // Fish setup
+  all_fish.push(makeFish([-0.5,0,0],[1,0,0,0.9],1.0,0.004,Math.random()*10,0,1));
+  for(let i=0;i<100;i++){
+    const alpha=0.5+Math.random()*0.4;
+    const color=[Math.random(),Math.random(),Math.random(),alpha];
+    const offset=[(Math.random()-0.5)*1.8,(Math.random()-0.5)*1.8,0];
+    const scale=0.3*Math.random()+0.05;
+    const speed=0.002+Math.random()*0.004;
+    const theta=(Math.random()*40-20)*Math.PI/180;
+    all_fish.push(makeFish(offset,color,scale,speed,Math.random()*10,theta,1));
+  }
+
+  animate();
+};
+
+function makeFish(offset,color,scale=1,speed=0.01,phase=0,theta=0,dir=1){
+  const verts=new Float32Array([
+    0.5,0,0,0.2,0.25,0,-0.2,0.15,0,
+    -0.4,0.3,0,-0.4,-0.3,0,-0.2,-0.15,0,0.2,-0.25,0
+  ]);
+  const idx=new Uint8Array([0,1,6,1,2,6,2,5,6,2,3,5,3,4,5]);
+  const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+  gl.bufferData(gl.ARRAY_BUFFER,verts,gl.STATIC_DRAW);
+  const ib=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,idx,gl.STATIC_DRAW);
+  let eyeLocal=(dir===1)?[0.33,0.06,0]:[-0.33,0.06,0];
+  if(scale>=0.9) eyeLocal=[0.25,-0.09,0];
+  const eb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,eb);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(eyeLocal),gl.STATIC_DRAW);
+  return [vb,ib,eb,new Float32Array(offset),new Float32Array(color),
+          scale,speed,phase,theta,dir];
+}
+
+function lerpAngle(a,b,t){
+  let diff=b-a;
+  while(diff>Math.PI) diff-=2*Math.PI;
+  while(diff<-Math.PI) diff+=2*Math.PI;
+  return a+diff*t;
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  gl.clearColor(0,0,0,0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  time+=0.02;
+
+  for(let r=0;r<all_fish.length;r++){
+    const f=all_fish[r];
+    const [vb,ib,eb,off,col,scale,speed,phase]=f;
+    let theta=f[8],dir=f[9];
+
+    // Movement
+    if(r===0){
+      if(manualMode){
+        const moveSpeed=0.01;
+        if(keys["arrowup"]||keys["w"]) off[1]+=moveSpeed;
+        if(keys["arrowdown"]||keys["s"]) off[1]-=moveSpeed;
+        if(keys["arrowleft"]||keys["a"]) off[0]-=moveSpeed;
+        if(keys["arrowright"]||keys["d"]) off[0]+=moveSpeed;
+        const dx=mouse.x - off[0];
+        const dy=mouse.y - off[1];
+        const targetTheta=Math.atan2(dy,dx);
+        theta=lerpAngle(theta,targetTheta,0.1);
+      } else {
+        theta+=Math.sin(time*0.1+phase)*0.001;
+        off[0]+=speed*Math.cos(theta)*dir;
+        off[1]+=speed*Math.sin(theta)+Math.sin(time*2.0+phase*10.0)*0.01;
+      }
+    } else {
+      theta+=Math.sin(time*0.1+phase)*0.001;
+      off[0]+=speed*Math.cos(theta)*dir;
+      off[1]+=speed*Math.sin(theta)+Math.sin(time*2.0+phase*10.0)*0.01;
+    }
+
+    // Bounce + sound
+    if(off[0]>BOUNDS_X){off[0]=BOUNDS_X;theta=Math.PI-theta;playBloop();}
+    if(off[0]<-BOUNDS_X){off[0]=-BOUNDS_X;theta=Math.PI-theta;playBloop();}
+    if(off[1]>BOUNDS_Y){off[1]=BOUNDS_Y;theta=-theta;playBloop();}
+    if(off[1]<-BOUNDS_Y){off[1]=-BOUNDS_Y;theta=-theta;playBloop();}
+
+    f[8]=theta;f[9]=dir;
+
+    // Random small rotation for the big red fish ---
+    if (r === 0) {
+      let randRot = Math.random() * 10 * Math.PI / 180; // 0..10 degrees in radians
+      theta += randRot;
+    }
+
+    const shake=(r===0)?0:(Math.random()*20-10)*Math.PI/180;
+    const totalTheta=theta+shake;
+    const c=Math.cos(totalTheta),s=Math.sin(totalTheta);
+    const tr=new Float32Array([
+      scale*c,scale*s,0,0,
+     -scale*s,scale*c,0,0,
+      0,0,scale,0,
+      off[0],off[1],0,1
+    ]);
+
+    const tnow=performance.now()*0.001;
+    const depthFade=Math.min(1.0,Math.pow(scale*3.0,0.8));
+    const depthAlpha=Math.max(0.2,depthFade*col[3]);
+    const brightness=0.5+0.5*depthFade;
+    let a=0.6+0.4*Math.sin(tnow*2.0);
+    let baseColor=[
+      (0.3+0.2*Math.sin(tnow))*brightness,
+      (0.6+0.2*Math.sin(tnow+2.0))*brightness,
+      (0.9+0.1*Math.sin(tnow+4.0))*brightness,
+      a*depthAlpha
+    ];
+    if(r===0){
+      let pulse=0.7+0.1*Math.sin(tnow*2.5);
+      baseColor=[1.0,0.2,0.15,pulse];
+    }
+
+    // Draw body
+    gl.useProgram(bodyProg);
+    let a_pos=gl.getAttribLocation(bodyProg,"a_position");
+    let u_tr=gl.getUniformLocation(bodyProg,"u_transform");
+    let u_col=gl.getUniformLocation(bodyProg,"u_color");
+    gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+    gl.vertexAttribPointer(a_pos,3,gl.FLOAT,false,0,0);
+    gl.enableVertexAttribArray(a_pos);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);
+    gl.uniformMatrix4fv(u_tr,false,tr);
+    gl.uniform4fv(u_col,baseColor);
+    gl.drawElements(gl.TRIANGLES,15,gl.UNSIGNED_BYTE,0);
+
+    // Draw eye
+    gl.useProgram(eyeProg);
+    a_pos=gl.getAttribLocation(eyeProg,"a_position");
+    u_tr=gl.getUniformLocation(eyeProg,"u_transform");
+    u_col=gl.getUniformLocation(eyeProg,"u_color");
+    const u_sz=gl.getUniformLocation(eyeProg,"u_pointsize");
+    gl.bindBuffer(gl.ARRAY_BUFFER,eb);
+    gl.vertexAttribPointer(a_pos,3,gl.FLOAT,false,0,0);
+    gl.enableVertexAttribArray(a_pos);
+    gl.uniformMatrix4fv(u_tr,false,tr);
+    let eyeAlpha=Math.min(baseColor[3]*0.9,1.0);
+    let eyeColor=(r===0)?[1.0,0.7,0.1,eyeAlpha]:[0.2,0.7,1.0,eyeAlpha];
+    gl.uniform4fv(u_col,new Float32Array(eyeColor));
+    gl.uniform1f(u_sz,28.0*scale);
+    gl.drawArrays(gl.POINTS,0,1);
+  }
+}
+
+// Safe bloop
+function playBloop(){
+  if(!soundsUnlocked) return;
+  try{
+    bloopSound.pause();
+    bloopSound.currentTime=0;
+    bloopSound.play().catch(()=>{});
+  }catch(e){}
+}
+</script>
+
+<body>
+  <canvas id="c"></canvas>
+  <div id="instructions">
+    <h3>Controls</h3>
+    <ul>
+      <li><b>W / ↑</b> – Move Up</li>
+      <li><b>S / ↓</b> – Move Down</li>
+      <li><b>A / ←</b> – Move Left</li>
+      <li><b>D / →</b> – Move Right</li>
+      <li><b>Move Mouse</b> – Rotate Head</li>
+      <li><b>M</b> – Toggle Manual/Auto Mode</li>
+      <li><b>Click or Key Once</b> – Enable Sound</li>
+    </ul>
+    <p style="text-align:center;color:#9cf;margin-top:6px;">
+      <b id="modeStatus">Manual Control 🕹️</b>
+    </p>
+  </div>
+</body>
+</html>
