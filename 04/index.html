@@ -228,6 +228,13 @@ function animate(){
     if(off[1]<-BOUNDS_Y){off[1]=-BOUNDS_Y;theta=-theta;playBloop();}
 
     f[8]=theta;f[9]=dir;
+
+    // Random small rotation for the big red fish ---
+    if (r === 0) {
+      let randRot = Math.random() * 10 * Math.PI / 180; // 0..10 degrees in radians
+      theta += randRot;
+    }
+
     const shake=(r===0)?0:(Math.random()*20-10)*Math.PI/180;
     const totalTheta=theta+shake;
     const c=Math.cos(totalTheta),s=Math.sin(totalTheta);
