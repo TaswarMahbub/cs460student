@@ -25,24 +25,24 @@
   // Load your model (change filename if needed)
   const result = await BABYLON.SceneLoader.AppendAsync("", "labubu.glb", scene);
 
-  // === SUPER BONUS: Apply awesome PBR materials to every mesh ===
+  
   result.meshes.forEach(mesh => {
     if (mesh.material) {
-      // Option 1: Velvet (perfect for Labubu / plush toys)
-    //   const velvet = new BABYLON.PBRMaterial("velvet", scene);
-    //   velvet.albedoColor = mesh.material.albedoColor || new BABYLON.Color3(0.8, 0.3, 0.6);
-    //   velvet.metallic = 0.0;
-    //   velvet.roughness = 0.9;
-    //   velvet.subSurface.isRefractionEnabled = true;
-    //   velvet.subSurface.indexOfRefraction = 1.5;
-    //   velvet.subSurface.tintColor = new BABYLON.Color3(1, 0.5, 0.7);
-    //   mesh.material = velvet;
+      // Option 1: Velvet 
+      const velvet = new BABYLON.PBRMaterial("velvet", scene);
+      velvet.albedoColor = mesh.material.albedoColor || new BABYLON.Color3(0.8, 0.3, 0.6);
+      velvet.metallic = 0.0;
+      velvet.roughness = 0.9;
+      velvet.subSurface.isRefractionEnabled = true;
+      velvet.subSurface.indexOfRefraction = 1.5;
+      velvet.subSurface.tintColor = new BABYLON.Color3(1, 0.5, 0.7);
+      mesh.material = velvet;
 
       // Option 2: Shiny Chrome (uncomment to use instead)
-      const chrome = new BABYLON.PBRMaterial("chrome", scene);
-      chrome.metallic = 1.0;
-      chrome.roughness = 0.1;
-      mesh.material = chrome;
+    //   const chrome = new BABYLON.PBRMaterial("chrome", scene);
+    //   chrome.metallic = 1.0;
+    //   chrome.roughness = 0.1;
+    //   mesh.material = chrome;
     }
   });
 
