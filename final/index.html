@@ -4,16 +4,13 @@
 <meta charset="utf-8">
 <title>CS460 Final Project - Prosthetic Biomechanics Simulator</title>
 <link rel="icon" href="data:,">
-
 <style>
   html, body { margin:0; background:#000; overflow:hidden; height:100%; }
   canvas { display:block; }
 </style>
 
-<!-- FPS Stats -->
 <script src="https://unpkg.com/stats.js@0.17.0/build/stats.min.js"></script>
 
-<!-- Importmap -->
 <script type="importmap">
 {
   "imports": {
@@ -27,281 +24,380 @@
 <body>
 <script type="module">
 
-// -------------------------------------------------------------
-// IMPORTS
-// -------------------------------------------------------------
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { Pane } from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js';
 
 // -------------------------------------------------------------
-// SCENE SETUP
+// SCENE
 // -------------------------------------------------------------
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x111111);
+scene.background = new THREE.Color(0x3a3a3a);
 
-const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 500);
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 500);
 camera.position.set(0, 6, 20);
-camera.lookAt(0, 5, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias:true });
 renderer.setPixelRatio(devicePixelRatio);
 renderer.setSize(innerWidth, innerHeight);
+
 renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+
 document.body.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
 
-// soft lighting
-scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-
-const dir = new THREE.DirectionalLight(0xffffff, 1.4);
+// Lights
+scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+const dir = new THREE.DirectionalLight(0xffffff, 1.6);
 dir.position.set(15, 20, 10);
 dir.castShadow = true;
+dir.shadow.mapSize.set(2048, 2048);
+dir.shadow.camera.left = -20;
+dir.shadow.camera.right = 20;
+dir.shadow.camera.top = 20;
+dir.shadow.camera.bottom = -20;
+dir.shadow.camera.near = 1;
+dir.shadow.camera.far = 80;
 scene.add(dir);
 
-// Grid (kept, because it adds spatial cues and professionalism)
-const grid = new THREE.GridHelper(40, 80, 0x333333, 0x222222);
-scene.add(grid);
+// --- VISUAL POLISH: fog + hemisphere fill light ---
+scene.fog = new THREE.Fog(0x2a2a2a, 25, 120);
 
-// FPS
+const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
+hemi.position.set(0, 50, 0);
+scene.add(hemi);
+
+// Sharper contact shadows (optional but nice)
+dir.shadow.bias = -0.0002;
+dir.shadow.normalBias = 0.02;
+
+
+// Ground + grid
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(200, 200),
+  new THREE.MeshStandardMaterial({
+    color: 0x3a3a3a,   // <-- lighter floor
+    roughness: 0.95,
+    metalness: 0.0
+  })
+);
+
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+scene.add(new THREE.GridHelper(40, 80, 0x777777, 0x555555));
+// --- VISUAL POLISH: fake contact shadow under the foot ---
+const contactShadow = new THREE.Mesh(
+  new THREE.CircleGeometry(2.2, 48),
+  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 })
+);
+contactShadow.rotation.x = -Math.PI / 2;
+contactShadow.position.y = 0.02; // slightly above ground to avoid z-fighting
+scene.add(contactShadow);
+
+
+// Stats
 const stats = new Stats();
 document.body.appendChild(stats.dom);
 
 // -------------------------------------------------------------
-// UI CONTROLS
+// UI
 // -------------------------------------------------------------
 const pane = new Pane({ title:"Biomechanical Controls" });
-
 const params = {
   angle: 0,
-  load: 1.0,
-  tightness: 1.0,
+  load: 1,
+  tightness: 1,
   socket_opacity: 0.4,
   wireframe: false,
   autoGait: false
 };
 
-pane.addBinding(params, "angle",       { min:-45, max:90, label:"Joint Angle" });
-pane.addBinding(params, "load",        { min:0, max:3, label:"Load Factor" });
-pane.addBinding(params, "tightness",   { min:0.5, max:2, label:"Socket Tightness" });
-pane.addBinding(params, "socket_opacity", { min:0.1, max:1, label:"Socket Opacity" });
-pane.addBinding(params, "wireframe",   { label:"Wireframe Mode" });
-pane.addBinding(params, "autoGait",    { label:"Simulate Gait Cycle" });
+pane.addBinding(params, "angle", {min:-45,max:90, label:"Joint Angle"});
+pane.addBinding(params, "load", {min:0,max:3, label:"Load"});
+pane.addBinding(params, "tightness",{min:0.5,max:2, label:"Socket Tightness"});
+pane.addBinding(params, "socket_opacity",{min:0.1,max:1, label:"Socket Opacity"});
+pane.addBinding(params, "wireframe", {label:"Wireframe (model)"});
+pane.addBinding(params, "autoGait", {label:"Auto Gait"});
 
-pane.addButton({ title:"Front View" }).on("click", ()=>{
-  camera.position.set(0, 6, 20);
-  camera.lookAt(0,5,0);
+pane.addButton({title:"Front View"}).on("click",()=>{
+  camera.position.set(0,6,20);
+  controls.target.set(0,5,0);
+  controls.update();
 });
-pane.addButton({ title:"Side View" }).on("click", ()=>{
-  camera.position.set(20, 6, 0);
-  camera.lookAt(6,5,0);
+pane.addButton({title:"Side View"}).on("click",()=>{
+  camera.position.set(20,6,0);
+  controls.target.set(6,5,0);
+  controls.update();
+});
+
+// Pressure Stats
+const pressureStats = {max:0,min:0,avg:0};
+const pFolder = pane.addFolder({title:"Pressure Stats"});
+pFolder.addBinding(pressureStats,"max",{readonly:true});
+pFolder.addBinding(pressureStats,"min",{readonly:true});
+pFolder.addBinding(pressureStats,"avg",{readonly:true});
+
+// -------------------------------------------------------------
+// MODEL ROOT (everything model-related lives here)
+// -------------------------------------------------------------
+const modelRoot = new THREE.Group();
+modelRoot.position.set(2, 6.1, 0);   // <--- move the whole prosthetic here
+scene.add(modelRoot);
+
+// -------------------------------------------------------------
+// Knee rig pivot group (origin = knee)
+// -------------------------------------------------------------
+const kneeRig = new THREE.Group();
+modelRoot.add(kneeRig);
+
+// Marker so you can SEE the pivot (green sphere should sit at knee)
+const kneeMarker = new THREE.Mesh(
+  new THREE.SphereGeometry(0.08, 24, 16),
+  new THREE.MeshStandardMaterial({ color: 0x00ff00, emissive: 0x003300 })
+);
+kneeMarker.castShadow = true;
+kneeRig.add(kneeMarker);
+kneeRig.add(new THREE.AxesHelper(0.6));
+
+pane.addButton({title:"Focus Knee"}).on("click",()=>{
+  const p = new THREE.Vector3();
+  kneeRig.getWorldPosition(p);
+  controls.target.copy(p);
+  camera.position.set(p.x + 6, p.y + 3, p.z + 10);
+  controls.update();
 });
 
 // -------------------------------------------------------------
-// PRESSURE STATS PANEL
+// Socket overlay (heatmap cylinder) - will be parented to upperPart
 // -------------------------------------------------------------
-const pressureStats = { max:0, min:0, avg:0 };
-const pFolder = pane.addFolder({ title:"Pressure Stats" });
-pFolder.addBinding(pressureStats, "max", { readonly:true });
-pFolder.addBinding(pressureStats, "min", { readonly:true });
-pFolder.addBinding(pressureStats, "avg", { readonly:true });
-
-// -------------------------------------------------------------
-// HEATMAP LEGEND (kept for presentation clarity)
-// -------------------------------------------------------------
-function addHeatmapLegend() {
-  const c=document.createElement("canvas");
-  c.width=40; c.height=256;
-  const ctx=c.getContext("2d");
-
-  for (let i=0;i<256;i++){
-    const p=i/256;
-    const col=new THREE.Color();
-    col.setHSL((1-p)*0.7,1,0.5);
-    ctx.fillStyle=`rgb(${col.r*255},${col.g*255},${col.b*255})`;
-    ctx.fillRect(0,255-i,40,1);
-  }
-
-  const tex=new THREE.CanvasTexture(c);
-  const spr=new THREE.Sprite(new THREE.SpriteMaterial({ map:tex }));
-  spr.scale.set(1,4,1);
-  spr.position.set(11, 7, 0);
-  scene.add(spr);
-
-  // Title
-  const labelCanvas = document.createElement("canvas");
-  labelCanvas.width = 300; labelCanvas.height = 80;
-  const ctx2 = labelCanvas.getContext("2d");
-  ctx2.font = "40px Arial"; ctx2.fillStyle = "white";
-  ctx2.fillText("Pressure", 20, 55);
-  const tex2 = new THREE.CanvasTexture(labelCanvas);
-  const labelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex2 }));
-  labelSprite.scale.set(3,1,1);
-  labelSprite.position.set(11, 9.5, 0);
-  scene.add(labelSprite);
-}
-addHeatmapLegend();
-
-// -------------------------------------------------------------
-// LOAD PROSTHETIC MODEL
-// -------------------------------------------------------------
-let prosthetic=null;
-let prostheticAttached=false;
-
-new GLTFLoader().load(
-  "https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb",
-  gltf=>{
-    prosthetic=gltf.scene;
-    prosthetic.scale.set(1.6,1.6,1.6);
-    prosthetic.rotation.set(0,0,0);
-    scene.add(prosthetic);
-  }
-);
-
-// -------------------------------------------------------------
-// LIMB SYSTEM
-// -------------------------------------------------------------
-const limbGroup=new THREE.Group();
-limbGroup.position.set(6,5,0);
-scene.add(limbGroup);
-
-const upper=new THREE.Mesh(
-  new THREE.CylinderGeometry(0.4,0.4,2,32),
-  new THREE.MeshStandardMaterial({ color:0x66aaff })
-);
-upper.position.y=1;
-limbGroup.add(upper);
-
-const joint=new THREE.Group();
-joint.position.y=0;
-upper.add(joint);
-
-const lower=new THREE.Mesh(
-  new THREE.CylinderGeometry(0.35,0.35,2,32),
-  new THREE.MeshStandardMaterial({ color:0x4477dd })
-);
-lower.position.y=-2;
-joint.add(lower);
-
-// Attach prosthetic 
-function tryAttachProsthetic(){
-  if (!prosthetic || prostheticAttached) return;
-  prostheticAttached=true;
-
-  joint.add(prosthetic);
-  prosthetic.position.set(0,-1.2,0);
-}
-
-// -------------------------------------------------------------
-// SOCKET
-// -------------------------------------------------------------
-const socket=new THREE.Mesh(
-  new THREE.CylinderGeometry(0.55,0.65,2.4,64,1,true),
+const socket = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.6, 0.7, 3.0, 64, 1, true),
   new THREE.MeshStandardMaterial({
-    color:0xffffff,
-    transparent:true,
-    opacity:params.socket_opacity,
-    vertexColors:true,
-    side:THREE.DoubleSide,
-    depthWrite:false,
-    blending:THREE.NormalBlending
+    color: 0xffffff,
+    transparent: true,
+    opacity: params.socket_opacity,
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    depthWrite: false
   })
 );
-socket.position.set(6,5,0);
-scene.add(socket);
+socket.receiveShadow = true;
 
 // -------------------------------------------------------------
-// HEATMAP (final improved version)
+// Heatmap update
 // -------------------------------------------------------------
-function updateHeatmap(mesh, load, angle, tightness){
-  const pos=mesh.geometry.attributes.position;
-  const count=pos.count;
-  const colors=mesh.geometry.attributes.color?.array || new Float32Array(count*3);
+function updateHeatmap(mesh, load, angle, tightness) {
+  const pos = mesh.geometry.attributes.position;
+  const count = pos.count;
 
-  let maxP=0, minP=999, total=0;
-  const bendFactor=Math.abs(angle)/90;
+  if (!mesh.geometry.attributes.color) {
+    mesh.geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(count*3), 3));
+  }
+  const colors = mesh.geometry.attributes.color.array;
 
-  for(let i=0;i<count;i++){
-    const x=pos.getX(i);
-    const y=pos.getY(i);
-    const z=pos.getZ(i);
+  let maxP = 0, minP = 1, total = 0;
+  const bend = Math.abs(angle) / 90;
 
-    const radial=Math.sqrt(x*x + z*z);
-    const angular=Math.abs(Math.atan2(z,x));
+  for (let i=0;i<count;i++){
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
 
     let pressure =
-       Math.pow(Math.abs(y)*load, tightness) +
-       radial * 0.4 +
-       angular * 0.15 +
-       bendFactor * 0.4;
+      Math.pow(Math.abs(y) * load, tightness) +
+      Math.sqrt(x*x + z*z) * 0.4 +
+      bend * 0.5;
 
-    pressure = pressure / 3.0;
-    pressure = THREE.MathUtils.clamp(pressure, 0, 1);
+    pressure = THREE.MathUtils.clamp(pressure/3, 0, 1);
 
-    maxP=Math.max(maxP,pressure);
-    minP=Math.min(minP,pressure);
-    total+=pressure;
+    maxP = Math.max(maxP, pressure);
+    minP = Math.min(minP, pressure);
+    total += pressure;
 
-    const c=new THREE.Color();
-    c.setHSL((1-pressure)*0.7,1,0.5);
+    const c = new THREE.Color();
+    c.setHSL((1 - pressure) * 0.7, 1, 0.5);
 
-    colors[i*3]=c.r;
-    colors[i*3+1]=c.g;
-    colors[i*3+2]=c.b;
+    colors[i*3]   = c.r;
+    colors[i*3+1] = c.g;
+    colors[i*3+2] = c.b;
   }
 
-  pressureStats.max=maxP.toFixed(2);
-  pressureStats.min=minP.toFixed(2);
-  pressureStats.avg=(total/count).toFixed(2);
+  pressureStats.max = maxP.toFixed(2);
+  pressureStats.min = minP.toFixed(2);
+  pressureStats.avg = (total/count).toFixed(2);
 
-  mesh.geometry.setAttribute("color", new THREE.BufferAttribute(colors,3));
-  mesh.geometry.attributes.color.needsUpdate=true;
+  mesh.geometry.attributes.color.needsUpdate = true;
 }
 
 // -------------------------------------------------------------
-// ANIMATION LOOP
+// Model split: upper fixed, lower rotates around kneeRig
 // -------------------------------------------------------------
-function animate(){
+let upperPart = null;
+let lowerPart = null;
+// --- BIOMECH VISUAL: ground reaction force arrow ---
+const forceArrow = new THREE.ArrowHelper(
+  new THREE.Vector3(0, 1, 0),   // direction
+  new THREE.Vector3(0, 0.05, 0),// origin
+  2.5,                          // length
+  0x00ffff                      // color
+);
+scene.add(forceArrow);
+
+
+function applyWireframeToModel(flag) {
+  [upperPart, lowerPart].forEach(g => {
+    if (!g) return;
+    g.traverse(o => {
+      if (o.isMesh && o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        mats.forEach(m => { if (m) m.wireframe = flag; });
+      }
+    });
+  });
+}
+
+function applyLoadCompression(load) {
+  if (!lowerPart) return;
+  const s = THREE.MathUtils.clamp(1 - load * 0.03, 0.85, 1.0);
+  lowerPart.scale.y = s;
+}
+
+function applyTightness(t) {
+  if (!upperPart) return;
+  const k = 1 + (t - 1) * 0.08;
+  upperPart.scale.x = k;
+  upperPart.scale.z = k;
+}
+
+// -------------------------------------------------------------
+// LOAD GLB and set pivot from the actual knee joint position
+// -------------------------------------------------------------
+new GLTFLoader().load("./models/prosthetic_leg.glb", (gltf) => {
+
+  const prosthetic = gltf.scene;
+  prosthetic.scale.set(0.08, 0.08, 0.08);
+
+  // Put whole GLB under modelRoot TEMP so we can read correct world positions
+  modelRoot.add(prosthetic);
+  scene.updateMatrixWorld(true);
+
+  // Find the knee node in your model
+  const kneeNode = prosthetic.getObjectByName("innerleg_low001");
+  console.log("kneeNode:", kneeNode?.name);
+
+  // If name exists: use its world position as the pivot
+  const kneeW = new THREE.Vector3();
+  if (kneeNode) {
+    kneeNode.getWorldPosition(kneeW);
+  } else {
+    // fallback: keep kneeRig as-is (you can still adjust manually)
+    kneeRig.position.set(4, 6.1, 0);
+    console.warn("Could not find innerleg_low001; using fallback kneeRig position.");
+  }
+
+  // Convert knee world position into modelRoot local coordinates
+  const kneeLocal = modelRoot.worldToLocal(kneeW.clone());
+
+  // THIS is the key fix: pivot origin becomes the GLB knee point
+  if (kneeNode) kneeRig.position.copy(kneeLocal);
+
+  // Build upper/lower groups under modelRoot
+  upperPart = new THREE.Group();
+  lowerPart = new THREE.Group();
+  modelRoot.add(upperPart);
+  kneeRig.add(lowerPart);
+
+  // Split by mesh center relative to knee (in WORLD space) to keep it simple
+  const kneeYWorld = kneeW.y;
+
+  const meshes = [];
+  prosthetic.traverse(o => { if (o.isMesh) meshes.push(o); });
+
+  const wp = new THREE.Vector3();
+  for (const m of meshes) {
+    m.getWorldPosition(wp);
+
+    if (wp.y >= kneeYWorld) upperPart.attach(m);
+    else lowerPart.attach(m);
+
+    m.frustumCulled = false;
+    m.castShadow = true;
+    m.receiveShadow = true;
+  }
+
+  // Remove the now-empty wrapper
+  modelRoot.remove(prosthetic);
+
+  // Parent socket overlay to upper assembly so it moves with the socket area
+  upperPart.add(socket);
+  socket.position.set(0, 0, 0);
+
+  console.log("Split complete. If kneeMarker is not at knee, the kneeNode name is wrong.");
+
+}, undefined, (e)=>console.error("GLB load error:", e));
+
+// -------------------------------------------------------------
+// Animation
+// -------------------------------------------------------------
+function animate() {
   stats.begin();
   requestAnimationFrame(animate);
 
-  tryAttachProsthetic();
-
-  if(params.autoGait){
-    params.angle = Math.sin(Date.now()*0.001)*45;
+  if (params.autoGait) {
+    params.angle = Math.sin(Date.now() * 0.001) * 45;
   }
 
-  // joint motion
-  joint.rotation.x=THREE.MathUtils.degToRad(params.angle);
+  // Rotation happens around kneeRig origin (now set from GLB knee node)
+  kneeRig.rotation.x = THREE.MathUtils.degToRad(params.angle);
+  // --- Update force arrow length + position ---
+const forceLen = 1 + params.load * 2.5;
+forceArrow.setLength(forceLen, 0.5, 0.35);
 
-  // limb compression
-  const contraction = 1 - params.load * 0.05;
-  upper.scale.y = contraction;
-  lower.scale.y = contraction;
+// anchor arrow near the lower part (approx foot area)
+if (lowerPart) {
+  const footP = new THREE.Vector3();
+  lowerPart.getWorldPosition(footP);
+  footP.y = 0.05;
+  forceArrow.position.copy(footP);
 
-  // socket tightness
+  // --- Update contact shadow under the "foot" ---
+  contactShadow.position.x = footP.x;
+  contactShadow.position.z = footP.z;
+  contactShadow.scale.set(1 + params.load * 0.25, 1 + params.load * 0.25, 1);
+}
+
+
+  // Socket visuals (overlay)
   socket.scale.set(params.tightness, 1, params.tightness);
-
-  socket.material.opacity=params.socket_opacity;
-  socket.material.wireframe=params.wireframe;
-
+  socket.material.opacity = params.socket_opacity;
+  socket.material.emissive = new THREE.Color(0x220000);
+  socket.material.emissiveIntensity = THREE.MathUtils.clamp(params.load * 0.35, 0, 0.8);
+  // Update heatmap + reflect params on model
   updateHeatmap(socket, params.load, params.angle, params.tightness);
 
-  renderer.render(scene,camera);
+  applyWireframeToModel(params.wireframe);
+  applyLoadCompression(params.load);
+  applyTightness(params.tightness);
+
+  renderer.render(scene, camera);
   controls.update();
   stats.end();
 }
 animate();
 
-// -------------------------------------------------------------
-// RESIZE HANDLER
-// -------------------------------------------------------------
-window.addEventListener("resize", ()=>{
-  camera.aspect=innerWidth/innerHeight;
+// Resize
+window.addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth,innerHeight);
+  renderer.setSize(innerWidth, innerHeight);
 });
 
 </script>
