@@ -1,12 +1,84 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8">
+<meta charset="utf-8" />
 <title>CS460 Final Project - Prosthetic Biomechanics Simulator</title>
-<link rel="icon" href="data:,">
+<link rel="icon" href="data:," />
 <style>
-  html, body { margin:0; background:#000; overflow:hidden; height:100%; }
+  html, body {
+    margin:0; background:#000; overflow:hidden; height:100%;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  }
   canvas { display:block; }
+
+  /* Loading overlay */
+  #loading {
+    position: fixed; inset: 0;
+    display: grid; place-items: center;
+    background: rgba(0,0,0,0.75);
+    color: white;
+    z-index: 9999;
+    user-select: none;
+  }
+  #loading .card {
+    width: min(560px, 92vw);
+    padding: 16px 18px;
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 14px;
+    background: rgba(25,25,25,0.9);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    line-height: 1.35;
+  }
+  #loading .title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+  #loading .small { opacity: 0.9; font-size: 13px; margin-top: 10px; }
+  #loading .err { color: #ffb3b3; margin-top: 10px; white-space: pre-wrap; font-size: 13px; }
+
+  /* HUD help */
+  #hud {
+    position: fixed;
+    left: 12px;
+    bottom: 12px;
+    z-index: 9998;
+    color: rgba(255,255,255,0.9);
+    background: rgba(0,0,0,0.45);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    padding: 10px 12px;
+    max-width: 520px;
+    user-select: none;
+  }
+  #hud .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #hud .key {
+    padding: 2px 6px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.06);
+    font-size: 12px;
+  }
+  #hud .muted { opacity: 0.8; font-size: 12px; }
+  #hud .legend {
+    display:flex; align-items:center; gap:8px; margin-top:8px;
+    font-size: 12px; opacity: 0.9;
+  }
+  #hud .bar {
+    width: 150px; height: 10px; border-radius: 999px;
+    background: linear-gradient(90deg, #00b7ff, #00ff6a, #ffe600, #ff4d4d);
+    border: 1px solid rgba(255,255,255,0.18);
+  }
+
+  /* Knee–Foot measurement */
+  #measure {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    z-index: 9998;
+    color: rgba(255,255,255,0.95);
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 12px;
+    padding: 8px 10px;
+    font-size: 13px;
+    user-select: none;
+  }
 </style>
 
 <script src="https://unpkg.com/stats.js@0.17.0/build/stats.min.js"></script>
@@ -22,31 +94,67 @@
 </head>
 
 <body>
-<script type="module">
+  <div id="loading">
+    <div class="card">
+      <div class="title">Loading prosthetic model…</div>
+      <div>Trying: <span id="loadPath"></span></div>
+      <div class="small">If it fails, you’ll still see a debug leg so you can test the animation.</div>
+      <div id="loadErr" class="err" style="display:none;"></div>
+    </div>
+  </div>
 
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { Pane } from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js';
+  <div id="hud">
+    <div class="row">
+      <span class="key">H</span><span class="muted">toggle help</span>
+      <span class="key">U</span><span class="muted">toggle UI</span>
+      <span class="key">R</span><span class="muted">reset camera + params</span>
+    </div>
+    <div class="row" style="margin-top:6px;">
+      <span class="muted">Orbit: drag • Zoom: scroll • Pan: right-drag</span>
+    </div>
+    <div class="legend">
+      <div class="bar"></div>
+      <div>Low pressure</div>
+      <div style="margin-left:auto;">High pressure</div>
+    </div>
+    <div class="muted" style="margin-top:6px;">
+      Note: pressure model is synthetic (for visualization), not clinical.
+    </div>
+  </div>
+
+  <div id="measure">Knee–Foot: --</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { Pane } from "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js";
+
+// -------------------------------------------------------------
+// CONFIG
+// -------------------------------------------------------------
+const MODEL_PATH = "./models/prosthetic_leg.glb";
+const KNEE_NODE_NAME = "innerleg_low001"; // change if your GLB uses a different node name
+document.getElementById("loadPath").textContent = MODEL_PATH;
 
 // -------------------------------------------------------------
 // SCENE
 // -------------------------------------------------------------
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x3a3a3a);
+scene.fog = new THREE.Fog(0x2a2a2a, 25, 120);
 
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 500);
-camera.position.set(0, 6, 20);
+camera.position.set(0, 50, 60);
 
-const renderer = new THREE.WebGLRenderer({ antialias:true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(devicePixelRatio);
 renderer.setSize(innerWidth, innerHeight);
-
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.1;
-
+renderer.localClippingEnabled = true;
 document.body.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -54,6 +162,7 @@ controls.enableDamping = true;
 
 // Lights
 scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+
 const dir = new THREE.DirectionalLight(0xffffff, 1.6);
 dir.position.set(15, 20, 10);
 dir.castShadow = true;
@@ -64,110 +173,215 @@ dir.shadow.camera.top = 20;
 dir.shadow.camera.bottom = -20;
 dir.shadow.camera.near = 1;
 dir.shadow.camera.far = 80;
+dir.shadow.bias = -0.0002;
+dir.shadow.normalBias = 0.02;
 scene.add(dir);
-
-// --- VISUAL POLISH: fog + hemisphere fill light ---
-scene.fog = new THREE.Fog(0x2a2a2a, 25, 120);
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
 hemi.position.set(0, 50, 0);
 scene.add(hemi);
 
-// Sharper contact shadows (optional but nice)
-dir.shadow.bias = -0.0002;
-dir.shadow.normalBias = 0.02;
-
-
 // Ground + grid
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(200, 200),
-  new THREE.MeshStandardMaterial({
-    color: 0x3a3a3a,   // <-- lighter floor
-    roughness: 0.95,
-    metalness: 0.0
-  })
+  new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.95, metalness: 0.0 })
 );
-
 ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
 scene.add(ground);
 
 scene.add(new THREE.GridHelper(40, 80, 0x777777, 0x555555));
-// --- VISUAL POLISH: fake contact shadow under the foot ---
+
+// Fake contact shadow under foot
 const contactShadow = new THREE.Mesh(
   new THREE.CircleGeometry(2.2, 48),
   new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 })
 );
 contactShadow.rotation.x = -Math.PI / 2;
-contactShadow.position.y = 0.02; // slightly above ground to avoid z-fighting
+contactShadow.position.y = 0.02;
 scene.add(contactShadow);
-
 
 // Stats
 const stats = new Stats();
 document.body.appendChild(stats.dom);
 
+const clock = new THREE.Clock();
+
 // -------------------------------------------------------------
-// UI
+// Cross-section clipping plane + helper (Slice feature)
 // -------------------------------------------------------------
-const pane = new Pane({ title:"Biomechanical Controls" });
+const clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 1e6); // y = constant
+const clipHelper = new THREE.PlaneHelper(clipPlane, 30, 0xff00ff);
+clipHelper.visible = false;
+scene.add(clipHelper);
+
+function applyClippingToObject(obj) {
+  obj.traverse(o => {
+    if (!o.isMesh || !o.material) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    mats.forEach(mat => {
+      if (!mat) return;
+      mat.clippingPlanes = [clipPlane];
+      mat.clipShadows = true;
+      mat.polygonOffset = true;
+      mat.polygonOffsetFactor = 1;
+      mat.polygonOffsetUnits = 1;
+    });
+  });
+}
+
+// -------------------------------------------------------------
+// UI (Tweakpane)
+// -------------------------------------------------------------
+const pane = new Pane({ title: "Biomechanical Controls" });
+
 const params = {
+  // core
   angle: 0,
   load: 1,
   tightness: 1,
   socket_opacity: 0.4,
   wireframe: false,
-  autoGait: false
+
+  // gait
+  autoGait: false,
+  gaitSpeed: 1.0,
+  gaitFlexAmp: 45,
+
+  // knee dynamics
+  knee_inertia: 1.0,
+  knee_stiffness: 35.0,
+  knee_damping: 10.0,
+  knee_extLimit: -110,
+  knee_flexLimit: 23.43,
+  knee_endStop: 120.0,
+  knee_endStopDamp: 18.0,
+
+  // slice
+  slice: false,
+  sliceHeight: 6.1,
+
+  // misc
+  flipLower: false,
+
+  // readouts
+  knee_angle_measured: 0,
+  knee_vel: 0,
+  contact: "No",
+  targetAngle: 0
 };
 
-pane.addBinding(params, "angle", {min:-45,max:90, label:"Joint Angle"});
-pane.addBinding(params, "load", {min:0,max:3, label:"Load"});
-pane.addBinding(params, "tightness",{min:0.5,max:2, label:"Socket Tightness"});
-pane.addBinding(params, "socket_opacity",{min:0.1,max:1, label:"Socket Opacity"});
-pane.addBinding(params, "wireframe", {label:"Wireframe (model)"});
-pane.addBinding(params, "autoGait", {label:"Auto Gait"});
+pane.addBinding(params, "angle", { min: -110, max: 23.43, label: "Joint Angle" });
+pane.addBinding(params, "load", { min: 0, max: 3, label: "Load" });
+pane.addBinding(params, "tightness", { min: 0.5, max: 2, label: "Socket Tightness" });
+pane.addBinding(params, "socket_opacity", { min: 0.1, max: 1, label: "Socket Opacity" });
+pane.addBinding(params, "wireframe", { label: "Wireframe (model)" });
+pane.addBinding(params, "autoGait", { label: "Auto Gait" });
+pane.addBinding(params, "flipLower", { label: "Flip Lower Leg" });
 
-pane.addButton({title:"Front View"}).on("click",()=>{
-  camera.position.set(0,6,20);
-  controls.target.set(0,5,0);
+pane.addBinding(params, "slice", { label: "Cross-section Slice" });
+pane.addBinding(params, "sliceHeight", { min: 0, max: 50, label: "Slice Height" });
+
+const gaitFolder = pane.addFolder({ title: "Gait" });
+gaitFolder.addBinding(params, "gaitSpeed", { min: 0.2, max: 3.0, label: "Speed" });
+gaitFolder.addBinding(params, "gaitFlexAmp", { min: 10, max: 80, label: "Flex Amp" });
+
+const kneeFolder = pane.addFolder({ title: "Knee Dynamics" });
+kneeFolder.addBinding(params, "knee_inertia", { min: 0.2, max: 4.0, label: "Inertia" });
+kneeFolder.addBinding(params, "knee_stiffness", { min: 5, max: 120, label: "Stiffness" });
+kneeFolder.addBinding(params, "knee_damping", { min: 0, max: 40, label: "Damping" });
+kneeFolder.addBinding(params, "knee_extLimit", { min: -150, max: 0, label: "Ext Limit" });
+kneeFolder.addBinding(params, "knee_flexLimit", { min: 0, max: 60, label: "Flex Limit" });
+kneeFolder.addBinding(params, "knee_endStop", { min: 0, max: 300, label: "End-Stop K" });
+kneeFolder.addBinding(params, "knee_endStopDamp", { min: 0, max: 50, label: "End-Stop D" });
+
+const readFolder = pane.addFolder({ title: "Readout" });
+readFolder.addBinding(params, "targetAngle", { readonly: true, label: "Target (deg)" });
+readFolder.addBinding(params, "knee_angle_measured", { readonly: true, label: "Angle (deg)" });
+readFolder.addBinding(params, "knee_vel", { readonly: true, label: "Vel (deg/s)" });
+readFolder.addBinding(params, "contact", { readonly: true, label: "Contact" });
+
+pane.addButton({ title: "Front View" }).on("click", () => {
+  camera.position.set(0, 50, 60);
+  controls.target.set(2, 6.1, 0);
   controls.update();
 });
-pane.addButton({title:"Side View"}).on("click",()=>{
-  camera.position.set(20,6,0);
-  controls.target.set(6,5,0);
+pane.addButton({ title: "Side View" }).on("click", () => {
+  camera.position.set(60, 50, 0);
+  controls.target.set(2, 6.1, 0);
   controls.update();
 });
 
-// Pressure Stats
-const pressureStats = {max:0,min:0,avg:0};
-const pFolder = pane.addFolder({title:"Pressure Stats"});
-pFolder.addBinding(pressureStats,"max",{readonly:true});
-pFolder.addBinding(pressureStats,"min",{readonly:true});
-pFolder.addBinding(pressureStats,"avg",{readonly:true});
+const presetFolder = pane.addFolder({ title: "Presets" });
+presetFolder.addButton({ title: "Standing" }).on("click", () => {
+  params.autoGait = false;
+  params.angle = 5;
+  params.load = 1.2;
+  params.tightness = 1.0;
+});
+presetFolder.addButton({ title: "Walking" }).on("click", () => {
+  params.autoGait = true;
+  params.load = 1.0;
+  params.tightness = 1.0;
+  params.gaitSpeed = 1.0;
+  params.gaitFlexAmp = 45;
+});
+presetFolder.addButton({ title: "High Load" }).on("click", () => {
+  params.autoGait = false;
+  params.angle = 23;
+  params.load = 2.8;
+  params.tightness = 1.4;
+});
+presetFolder.addButton({ title: "Loose Socket" }).on("click", () => {
+  params.tightness = 0.7;
+  params.socket_opacity = 0.35;
+});
+presetFolder.addButton({ title: "Tight Socket" }).on("click", () => {
+  params.tightness = 1.8;
+  params.socket_opacity = 0.55;
+});
+
+pane.addButton({ title: "Save Screenshot" }).on("click", () => {
+  renderer.render(scene, camera);
+  const a = document.createElement("a");
+  a.download = "prosthetic_sim.png";
+  a.href = renderer.domElement.toDataURL("image/png");
+  a.click();
+});
+
+// Pressure stats
+const pressureStats = { max: 0, min: 0, avg: 0, stanceLoad: 0 };
+const pFolder = pane.addFolder({ title: "Pressure Stats" });
+pFolder.addBinding(pressureStats, "max", { readonly: true });
+pFolder.addBinding(pressureStats, "min", { readonly: true });
+pFolder.addBinding(pressureStats, "avg", { readonly: true });
+pFolder.addBinding(pressureStats, "stanceLoad", { readonly: true, label: "Effective Load" });
 
 // -------------------------------------------------------------
-// MODEL ROOT (everything model-related lives here)
+// MODEL ROOT + KNEE RIG
 // -------------------------------------------------------------
 const modelRoot = new THREE.Group();
-modelRoot.position.set(2, 6.1, 0);   // <--- move the whole prosthetic here
+modelRoot.position.set(2, 6.1, 0);
+modelRoot.rotation.y = Math.PI; // keep your original "front view" expectation
 scene.add(modelRoot);
 
-// -------------------------------------------------------------
-// Knee rig pivot group (origin = knee)
-// -------------------------------------------------------------
 const kneeRig = new THREE.Group();
 modelRoot.add(kneeRig);
 
-// Marker so you can SEE the pivot (green sphere should sit at knee)
+// Pivot visual helpers
 const kneeMarker = new THREE.Mesh(
   new THREE.SphereGeometry(0.08, 24, 16),
   new THREE.MeshStandardMaterial({ color: 0x00ff00, emissive: 0x003300 })
 );
 kneeMarker.castShadow = true;
+kneeMarker.userData.persistent = true;
 kneeRig.add(kneeMarker);
-kneeRig.add(new THREE.AxesHelper(0.6));
 
-pane.addButton({title:"Focus Knee"}).on("click",()=>{
+const axesHelper = new THREE.AxesHelper(0.6);
+axesHelper.userData.persistent = true;
+kneeRig.add(axesHelper);
+
+pane.addButton({ title: "Focus Knee" }).on("click", () => {
   const p = new THREE.Vector3();
   kneeRig.getWorldPosition(p);
   controls.target.copy(p);
@@ -176,7 +390,18 @@ pane.addButton({title:"Focus Knee"}).on("click",()=>{
 });
 
 // -------------------------------------------------------------
-// Socket overlay (heatmap cylinder) - will be parented to upperPart
+// Knee–Foot measurement (line + label)
+// -------------------------------------------------------------
+const measureLine = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+  new THREE.LineBasicMaterial({ color: 0xffff00 })
+);
+scene.add(measureLine);
+
+const measureDiv = document.getElementById("measure");
+
+// -------------------------------------------------------------
+// SOCKET OVERLAY (HEATMAP)
 // -------------------------------------------------------------
 const socket = new THREE.Mesh(
   new THREE.CylinderGeometry(0.6, 0.7, 3.0, 64, 1, true),
@@ -191,67 +416,98 @@ const socket = new THREE.Mesh(
 );
 socket.receiveShadow = true;
 
-// -------------------------------------------------------------
-// Heatmap update
-// -------------------------------------------------------------
-function updateHeatmap(mesh, load, angle, tightness) {
+const tmpColor = new THREE.Color();
+
+function updateHeatmap(mesh, load, angleDeg, tightness) {
   const pos = mesh.geometry.attributes.position;
   const count = pos.count;
 
   if (!mesh.geometry.attributes.color) {
-    mesh.geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(count*3), 3));
+    mesh.geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(count * 3), 3));
   }
   const colors = mesh.geometry.attributes.color.array;
 
   let maxP = 0, minP = 1, total = 0;
-  const bend = Math.abs(angle) / 90;
+  const bend = Math.abs(angleDeg) / 90;
 
-  for (let i=0;i<count;i++){
+  for (let i = 0; i < count; i++) {
     const x = pos.getX(i);
     const y = pos.getY(i);
     const z = pos.getZ(i);
 
+    // synthetic pressure model (fast + stable)
     let pressure =
       Math.pow(Math.abs(y) * load, tightness) +
-      Math.sqrt(x*x + z*z) * 0.4 +
+      Math.sqrt(x * x + z * z) * 0.4 +
       bend * 0.5;
 
-    pressure = THREE.MathUtils.clamp(pressure/3, 0, 1);
+    pressure = THREE.MathUtils.clamp(pressure / 3, 0, 1);
 
     maxP = Math.max(maxP, pressure);
     minP = Math.min(minP, pressure);
     total += pressure;
 
-    const c = new THREE.Color();
-    c.setHSL((1 - pressure) * 0.7, 1, 0.5);
-
-    colors[i*3]   = c.r;
-    colors[i*3+1] = c.g;
-    colors[i*3+2] = c.b;
+    tmpColor.setHSL((1 - pressure) * 0.7, 1, 0.5);
+    colors[i * 3] = tmpColor.r;
+    colors[i * 3 + 1] = tmpColor.g;
+    colors[i * 3 + 2] = tmpColor.b;
   }
 
   pressureStats.max = maxP.toFixed(2);
   pressureStats.min = minP.toFixed(2);
-  pressureStats.avg = (total/count).toFixed(2);
-
+  pressureStats.avg = (total / count).toFixed(2);
   mesh.geometry.attributes.color.needsUpdate = true;
 }
+
+// -------------------------------------------------------------
+// BIOMECH VISUALS (FORCE ARROW)
+// -------------------------------------------------------------
+const forceArrow = new THREE.ArrowHelper(
+  new THREE.Vector3(0, 1, 0),
+  new THREE.Vector3(0, 0.05, 0),
+  2.5,
+  0x00ffff
+);
+scene.add(forceArrow);
 
 // -------------------------------------------------------------
 // Model split: upper fixed, lower rotates around kneeRig
 // -------------------------------------------------------------
 let upperPart = null;
 let lowerPart = null;
-// --- BIOMECH VISUAL: ground reaction force arrow ---
-const forceArrow = new THREE.ArrowHelper(
-  new THREE.Vector3(0, 1, 0),   // direction
-  new THREE.Vector3(0, 0.05, 0),// origin
-  2.5,                          // length
-  0x00ffff                      // color
-);
-scene.add(forceArrow);
 
+// Knee simulated state (radians)
+const kneeSim = { theta: 0, omega: 0 };
 
+// Performance: only reapply wireframe when toggled
+let lastWireframe = params.wireframe;
+
+// temp helpers for foot finding
+const _tmpV3 = new THREE.Vector3();
+const _footBox = new THREE.Box3();
+
+// Find "foot" (world-space) from the bounding box of the lowerPart
+function getFootGroundPoint(out = new THREE.Vector3()) {
+  if (!lowerPart) return out.set(modelRoot.position.x, 0.05, modelRoot.position.z);
+
+  lowerPart.updateWorldMatrix(true, true);
+  _footBox.setFromObject(lowerPart);
+
+  const x = (_footBox.min.x + _footBox.max.x) * 0.5;
+  const z = (_footBox.min.z + _footBox.max.z) * 0.5;
+  const y = Math.max(0.05, _footBox.min.y); // small clamp above ground
+
+  return out.set(x, y, z);
+}
+
+function computeContactFromFoot(footP) {
+  // ground plane at y=0; threshold a bit above to avoid jitter
+  return footP.y <= 0.12;
+}
+
+// -------------------------------------------------------------
+// Model param effects
+// -------------------------------------------------------------
 function applyWireframeToModel(flag) {
   [upperPart, lowerPart].forEach(g => {
     if (!g) return;
@@ -278,117 +534,369 @@ function applyTightness(t) {
 }
 
 // -------------------------------------------------------------
-// LOAD GLB and set pivot from the actual knee joint position
+// RIG CLEANUP (prevents overlap / duplicates)
 // -------------------------------------------------------------
-new GLTFLoader().load("./models/prosthetic_leg.glb", (gltf) => {
+function detachSocket() {
+  if (socket && socket.parent) socket.parent.remove(socket);
+}
 
-  const prosthetic = gltf.scene;
-  prosthetic.scale.set(0.08, 0.08, 0.08);
+function removeDynamicChildren(group) {
+  const toRemove = [];
+  group.children.forEach(ch => {
+    if (!ch.userData || !ch.userData.persistent) toRemove.push(ch);
+  });
+  toRemove.forEach(ch => group.remove(ch));
+}
 
-  // Put whole GLB under modelRoot TEMP so we can read correct world positions
-  modelRoot.add(prosthetic);
-  scene.updateMatrixWorld(true);
+function clearLegRig() {
+  if (upperPart && upperPart.parent) upperPart.parent.remove(upperPart);
+  if (lowerPart && lowerPart.parent) lowerPart.parent.remove(lowerPart);
+  upperPart = null;
+  lowerPart = null;
 
-  // Find the knee node in your model
-  const kneeNode = prosthetic.getObjectByName("innerleg_low001");
-  console.log("kneeNode:", kneeNode?.name);
+  removeDynamicChildren(kneeRig);
+  detachSocket();
+}
 
-  // If name exists: use its world position as the pivot
-  const kneeW = new THREE.Vector3();
-  if (kneeNode) {
-    kneeNode.getWorldPosition(kneeW);
-  } else {
-    // fallback: keep kneeRig as-is (you can still adjust manually)
-    kneeRig.position.set(4, 6.1, 0);
-    console.warn("Could not find innerleg_low001; using fallback kneeRig position.");
-  }
+// -------------------------------------------------------------
+// DEBUG FALLBACK LEG (always animates)
+// -------------------------------------------------------------
+function buildDebugLeg() {
+  clearLegRig();
 
-  // Convert knee world position into modelRoot local coordinates
-  const kneeLocal = modelRoot.worldToLocal(kneeW.clone());
-
-  // THIS is the key fix: pivot origin becomes the GLB knee point
-  if (kneeNode) kneeRig.position.copy(kneeLocal);
-
-  // Build upper/lower groups under modelRoot
   upperPart = new THREE.Group();
   lowerPart = new THREE.Group();
   modelRoot.add(upperPart);
   kneeRig.add(lowerPart);
 
-  // Split by mesh center relative to knee (in WORLD space) to keep it simple
-  const kneeYWorld = kneeW.y;
+  // Upper segment
+  const upper = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.45, 0.55, 4.2, 28),
+    new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.35, metalness: 0.25 })
+  );
+  upper.position.set(0, 2.1, 0);
+  upper.castShadow = true;
+  upper.receiveShadow = true;
+  upperPart.add(upper);
 
-  const meshes = [];
-  prosthetic.traverse(o => { if (o.isMesh) meshes.push(o); });
+  // Knee cap (dynamic -> gets removed by clearLegRig)
+  const kneeCap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.6, 28, 18),
+    new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.4, metalness: 0.3 })
+  );
+  kneeCap.position.set(0, 0.0, 0);
+  kneeCap.castShadow = true;
+  kneeCap.receiveShadow = true;
+  kneeRig.add(kneeCap);
 
-  const wp = new THREE.Vector3();
-  for (const m of meshes) {
-    m.getWorldPosition(wp);
+  // Lower segment
+  const lower = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.35, 0.45, 4.5, 28),
+    new THREE.MeshStandardMaterial({ color: 0xb0c4ff, roughness: 0.45, metalness: 0.15 })
+  );
+  lower.position.set(0, -2.2, 0);
+  lower.castShadow = true;
+  lower.receiveShadow = true;
+  lowerPart.add(lower);
 
-    if (wp.y >= kneeYWorld) upperPart.attach(m);
-    else lowerPart.attach(m);
+  // Foot
+  const foot = new THREE.Mesh(
+    new THREE.BoxGeometry(1.6, 0.45, 2.6),
+    new THREE.MeshStandardMaterial({ color: 0x2de1ff, roughness: 0.25, metalness: 0.2 })
+  );
+  foot.position.set(0.2, -4.55, 0.3);
+  foot.castShadow = true;
+  foot.receiveShadow = true;
+  lowerPart.add(foot);
 
-    m.frustumCulled = false;
-    m.castShadow = true;
-    m.receiveShadow = true;
-  }
+  // Put knee pivot somewhere sensible
+  kneeRig.position.set(0, 6.1, 0);
 
-  // Remove the now-empty wrapper
-  modelRoot.remove(prosthetic);
-
-  // Parent socket overlay to upper assembly so it moves with the socket area
+  // Attach socket overlay to upper (single instance)
+  detachSocket();
   upperPart.add(socket);
-  socket.position.set(0, 0, 0);
+  socket.position.set(0, 2.3, 0);
 
-  console.log("Split complete. If kneeMarker is not at knee, the kneeNode name is wrong.");
-
-}, undefined, (e)=>console.error("GLB load error:", e));
+  // Enable slicing on debug meshes too
+  applyClippingToObject(upperPart);
+  applyClippingToObject(lowerPart);
+}
 
 // -------------------------------------------------------------
-// Animation
+// LOAD GLB (with clean split) + fallback
 // -------------------------------------------------------------
+const loader = new GLTFLoader();
+
+loader.load(
+  MODEL_PATH,
+  (gltf) => {
+    // success: wipe any existing debug rig first
+    clearLegRig();
+
+    const prosthetic = gltf.scene;
+    prosthetic.scale.set(0.08, 0.08, 0.08);
+
+    // TEMP parent so world positions are correct
+    modelRoot.add(prosthetic);
+    scene.updateMatrixWorld(true);
+
+    // Find knee node
+    const kneeNode = prosthetic.getObjectByName(KNEE_NODE_NAME);
+    console.log("kneeNode:", kneeNode?.name);
+
+    const kneeW = new THREE.Vector3();
+    if (kneeNode) {
+      kneeNode.getWorldPosition(kneeW);
+    } else {
+      console.warn(`Could not find "${KNEE_NODE_NAME}". Using fallback knee pivot.`);
+      modelRoot.getWorldPosition(kneeW);
+    }
+
+    // Set kneeRig position in modelRoot local space
+    kneeRig.position.copy(modelRoot.worldToLocal(kneeW.clone()));
+
+    // Build upper/lower groups
+    upperPart = new THREE.Group();
+    lowerPart = new THREE.Group();
+    modelRoot.add(upperPart);
+    kneeRig.add(lowerPart);
+
+    // Split by mesh center relative to knee (WORLD space)
+    const kneeYWorld = kneeW.y;
+    const meshes = [];
+    prosthetic.traverse(o => { if (o.isMesh) meshes.push(o); });
+
+    const wp = new THREE.Vector3();
+    for (const m of meshes) {
+      m.getWorldPosition(wp);
+      if (wp.y >= kneeYWorld) upperPart.attach(m);
+      else lowerPart.attach(m);
+
+      m.frustumCulled = false;
+      m.castShadow = true;
+      m.receiveShadow = true;
+    }
+
+    // remove wrapper
+    modelRoot.remove(prosthetic);
+
+    // Attach socket overlay to upper (single instance)
+    detachSocket();
+    upperPart.add(socket);
+    socket.position.set(0, 0, 0);
+
+    // Enable slicing on GLB meshes
+    applyClippingToObject(upperPart);
+    applyClippingToObject(lowerPart);
+
+    // Hide loading overlay
+    document.getElementById("loading").style.display = "none";
+    console.log("GLB loaded and split complete.");
+  },
+  undefined,
+  (e) => {
+    console.error("GLB load error:", e);
+
+    // Show message but keep app running with debug leg
+    const errEl = document.getElementById("loadErr");
+    errEl.style.display = "block";
+    errEl.textContent =
+      "Model failed to load. Using debug leg.\n\n" +
+      "Common fixes:\n" +
+      "- Make sure models/prosthetic_leg.glb exists relative to index.html\n" +
+      "- On GitHub Pages, confirm correct folder name + case sensitivity\n" +
+      "- DevTools -> Network tab to see 404/blocked request\n\n" +
+      "Error: " + (e?.message || String(e));
+
+    buildDebugLeg();
+
+    // Hide loading overlay after a moment so you can keep working
+    setTimeout(() => {
+      document.getElementById("loading").style.display = "none";
+    }, 900);
+  }
+);
+
+// -------------------------------------------------------------
+// KEYBOARD SHORTCUTS
+// -------------------------------------------------------------
+const hud = document.getElementById("hud");
+let hudVisible = true;
+let paneVisible = true;
+
+function resetAll() {
+  // params
+  params.autoGait = false;
+  params.angle = 0;
+  params.load = 1;
+  params.tightness = 1;
+  params.socket_opacity = 0.4;
+  params.wireframe = false;
+  params.gaitSpeed = 1.0;
+  params.gaitFlexAmp = 45;
+  params.slice = false;
+  params.sliceHeight = 6.1;
+  params.flipLower = false;
+
+  // sim state
+  kneeSim.theta = 0;
+  kneeSim.omega = 0;
+
+  // camera
+  camera.position.set(0, 50, 60);
+  controls.target.set(2, 6.1, 0);
+  controls.update();
+}
+
+window.addEventListener("keydown", (ev) => {
+  const k = ev.key.toLowerCase();
+  if (k === "h") {
+    hudVisible = !hudVisible;
+    hud.style.display = hudVisible ? "block" : "none";
+  }
+  if (k === "u") {
+    paneVisible = !paneVisible;
+    pane.element.style.display = paneVisible ? "block" : "none";
+  }
+  if (k === "r") {
+    resetAll();
+  }
+});
+
+// -------------------------------------------------------------
+// ANIMATION (combined features)
+// - slice (clipPlane)
+// - knee dynamics (spring-damper) + end-stops
+// - auto gait + small bob
+// - contact + effective load
+// - force arrow direction + length
+// - knee–foot measure line
+// - heatmap uses measured angle
+// -------------------------------------------------------------
+const BASE_POS = new THREE.Vector3(2, 6.1, 0);
+
 function animate() {
   stats.begin();
   requestAnimationFrame(animate);
 
+  const dt = Math.min(clock.getDelta(), 0.033);
+  const time = performance.now() * 0.001;
+
+  // Slice control
+  if (params.slice) {
+    clipPlane.constant = params.sliceHeight;
+  } else {
+    clipPlane.constant = 1e6;
+  }
+  clipHelper.visible = params.slice;
+
+  // Auto gait target
+  const gait = Math.sin(time * params.gaitSpeed * 2.0 * Math.PI); // -1..1
+  let targetDeg = params.autoGait ? (gait * params.gaitFlexAmp) : params.angle;
+
+  // Clamp target to ROM
+  targetDeg = THREE.MathUtils.clamp(targetDeg, params.knee_extLimit, params.knee_flexLimit);
+  params.targetAngle = targetDeg.toFixed(1);
+
+  // ModelRoot bobbing when auto gait (keeps your old bob feature)
   if (params.autoGait) {
-    params.angle = Math.sin(Date.now() * 0.001) * 45;
+    modelRoot.position.y = BASE_POS.y + Math.sin(time * 2.0) * 0.08;
+    modelRoot.position.x = BASE_POS.x + Math.sin(time * 2.0 + Math.PI / 2) * 0.06;
+  } else {
+    modelRoot.position.copy(BASE_POS);
   }
 
-  // Rotation happens around kneeRig origin (now set from GLB knee node)
-  kneeRig.rotation.x = THREE.MathUtils.degToRad(params.angle);
-  // --- Update force arrow length + position ---
-const forceLen = 1 + params.load * 2.5;
-forceArrow.setLength(forceLen, 0.5, 0.35);
+  // Spring-damper knee tracking (radians)
+  const target = THREE.MathUtils.degToRad(targetDeg);
+  const extL = THREE.MathUtils.degToRad(params.knee_extLimit);
+  const flexL = THREE.MathUtils.degToRad(params.knee_flexLimit);
 
-// anchor arrow near the lower part (approx foot area)
-if (lowerPart) {
-  const footP = new THREE.Vector3();
-  lowerPart.getWorldPosition(footP);
-  footP.y = 0.05;
-  forceArrow.position.copy(footP);
+  const err = target - kneeSim.theta;
+  let torque = params.knee_stiffness * err - params.knee_damping * kneeSim.omega;
 
-  // --- Update contact shadow under the "foot" ---
-  contactShadow.position.x = footP.x;
-  contactShadow.position.z = footP.z;
-  contactShadow.scale.set(1 + params.load * 0.25, 1 + params.load * 0.25, 1);
-}
+  // End-stops (soft limits)
+  if (kneeSim.theta < extL) {
+    const d = kneeSim.theta - extL;
+    torque += -params.knee_endStop * d - params.knee_endStopDamp * kneeSim.omega;
+  }
+  if (kneeSim.theta > flexL) {
+    const d = kneeSim.theta - flexL;
+    torque += -params.knee_endStop * d - params.knee_endStopDamp * kneeSim.omega;
+  }
 
+  // Integrate
+  const alpha = torque / Math.max(params.knee_inertia, 0.001);
+  kneeSim.omega += alpha * dt;
+  kneeSim.theta += kneeSim.omega * dt;
 
-  // Socket visuals (overlay)
+  // Apply knee rotation
+  kneeRig.rotation.x = kneeSim.theta;
+
+  // Apply optional lower flip
+  if (lowerPart) lowerPart.rotation.y = params.flipLower ? Math.PI : 0;
+
+  // Readouts
+  const kneeDeg = THREE.MathUtils.radToDeg(kneeSim.theta);
+  params.knee_angle_measured = kneeDeg.toFixed(1);
+  params.knee_vel = THREE.MathUtils.radToDeg(kneeSim.omega).toFixed(1);
+
+  // Foot point from bounding box (works for GLB + debug)
+  const footP = getFootGroundPoint(_tmpV3);
+  const inContact = computeContactFromFoot(footP);
+  params.contact = inContact ? "Yes" : "No";
+
+  // Effective load: stance vs swing
+  const effectiveLoad = params.load * (inContact ? 1.0 : 0.25);
+  pressureStats.stanceLoad = effectiveLoad.toFixed(2);
+
+  // Force arrow: position + direction + length
+  const forceLen = 1 + effectiveLoad * 2.5;
+  forceArrow.position.set(footP.x, 0.05, footP.z);
+
+  // Add a tiny forward component based on knee angle (looks more alive)
+  const forward = new THREE.Vector3(0.12 * Math.sin(kneeSim.theta), 1, 0).normalize();
+  forceArrow.setDirection(forward);
+  forceArrow.setLength(forceLen, 0.5, 0.35);
+
+  // Contact shadow
+  contactShadow.position.set(footP.x, 0.02, footP.z);
+  const shadowScale = 1 + effectiveLoad * 0.25;
+  contactShadow.scale.set(shadowScale, shadowScale, 1);
+  contactShadow.material.opacity = inContact ? 0.28 : 0.12;
+
+  // Knee–Foot measure line + label
+  if (lowerPart) {
+    const kneeP = new THREE.Vector3();
+    kneeRig.getWorldPosition(kneeP);
+
+    const footForMeasure = footP.clone();
+    measureLine.geometry.setFromPoints([kneeP, footForMeasure]);
+
+    const d = kneeP.distanceTo(footForMeasure);
+    measureDiv.textContent = `Knee–Foot: ${d.toFixed(2)} units`;
+  }
+
+  // Socket visuals
   socket.scale.set(params.tightness, 1, params.tightness);
   socket.material.opacity = params.socket_opacity;
-  socket.material.emissive = new THREE.Color(0x220000);
-  socket.material.emissiveIntensity = THREE.MathUtils.clamp(params.load * 0.35, 0, 0.8);
-  // Update heatmap + reflect params on model
-  updateHeatmap(socket, params.load, params.angle, params.tightness);
+  socket.material.emissive.set(0x220000);
+  socket.material.emissiveIntensity = THREE.MathUtils.clamp(effectiveLoad * 0.35, 0, 0.8);
 
-  applyWireframeToModel(params.wireframe);
-  applyLoadCompression(params.load);
+  // Heatmap uses measured knee angle
+  updateHeatmap(socket, effectiveLoad, kneeDeg, params.tightness);
+
+  // Apply wireframe only when toggled
+  if (params.wireframe !== lastWireframe) {
+    lastWireframe = params.wireframe;
+    applyWireframeToModel(params.wireframe);
+  }
+
+  // Apply model effects
+  applyLoadCompression(effectiveLoad);
   applyTightness(params.tightness);
 
-  renderer.render(scene, camera);
   controls.update();
+  renderer.render(scene, camera);
   stats.end();
 }
 animate();
@@ -399,7 +907,6 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-
 </script>
 </body>
 </html>
